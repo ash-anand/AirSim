@@ -4,6 +4,7 @@
 #include "common/Common.hpp"
 #include "SimMode/SimModeWorldBase.h"
 #include "VehiclePawnWrapper.h"
+#include "common/StateReporterWrapper.hpp"
 #include "SimModeCar.generated.h"
 
 
@@ -19,13 +20,17 @@ public:
     ASimModeCar();
     virtual void BeginPlay() override;
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    virtual void Tick(float DeltaSeconds) override;
 
     virtual VehiclePawnWrapper* getFpvVehiclePawnWrapper() override;
 
     void createVehicles(std::vector<VehiclePtr>& vehicles);
+    virtual void reset() override;
+    virtual std::string getReport() override;
 
 private:
     void setupVehiclesAndCamera(std::vector<VehiclePtr>& vehicles);
+    void updateReport();
 
 private:    
     UClass* external_camera_class_;
@@ -35,4 +40,6 @@ private:
     TArray<AActor*> spawned_actors_;
     std::vector<VehiclePtr> vehicles_;
     VehiclePawnWrapper* fpv_vehicle_pawn_wrapper_;
+    float follow_distance_;
+    msr::airlib::StateReporterWrapper report_wrapper_;
 };

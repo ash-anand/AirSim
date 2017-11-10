@@ -57,8 +57,10 @@ public:
         Vector3r position;
         msr::airlib::real_T penetration_depth = 0;
         msr::airlib::TTimePoint time_stamp = 0;
+        std::string object_name;
+        int object_id = -1;
 
-        MSGPACK_DEFINE_MAP(has_collided, penetration_depth, time_stamp, normal, impact_point, position);
+        MSGPACK_DEFINE_MAP(has_collided, penetration_depth, time_stamp, normal, impact_point, position, object_name, object_id);
         
         CollisionInfo()
         {}
@@ -66,22 +68,24 @@ public:
         CollisionInfo(const msr::airlib::CollisionInfo& s)
         {
             has_collided = s.has_collided;
-            penetration_depth = s.penetration_depth;
-            time_stamp = s.time_stamp;
             normal = s.normal;
             impact_point = s.impact_point;
             position = s.position;
+            penetration_depth = s.penetration_depth;
+            time_stamp = s.time_stamp;
+            object_name = s.object_name;
+            object_id = s.object_id;
         }
 
         msr::airlib::CollisionInfo to() const
         {
             return msr::airlib::CollisionInfo(has_collided, normal.to(), impact_point.to(), position.to(),
-                penetration_depth, time_stamp);
+                penetration_depth, time_stamp, object_name, object_id);
         }
     };
 
     struct Quaternionr {
-        msr::airlib::real_T w_val, x_val, y_val, z_val;
+        msr::airlib::real_T w_val = 1, x_val = 0, y_val = 0, z_val = 0;
         MSGPACK_DEFINE_MAP(w_val, x_val, y_val, z_val);
 
         Quaternionr()
@@ -97,6 +101,24 @@ public:
         msr::airlib::Quaternionr to() const
         {
             return msr::airlib::Quaternionr(w_val, x_val, y_val, z_val);
+        }
+    };
+
+    struct Pose {
+        Vector3r position;
+        Quaternionr orientation;
+        MSGPACK_DEFINE_MAP(position, orientation);
+
+        Pose()
+        {}
+        Pose(const msr::airlib::Pose& s)
+        {
+            position = s.position;
+            orientation = s.orientation;
+        }
+        msr::airlib::Pose to() const
+        {
+            return msr::airlib::Pose(position.to(), orientation.to());
         }
     };
 

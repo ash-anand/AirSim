@@ -10,6 +10,7 @@
 #include <string>
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Components/MeshComponent.h"
 #include "AirBlueprintLib.generated.h"
 
 UENUM(BlueprintType)
@@ -39,10 +40,16 @@ public:
     static T* FindActor(const UObject* context, FString name);
     template<typename T>
     static void FindAllActor(const UObject* context, TArray<AActor*>& foundActors);
-    static bool HasObstacle(const AActor* actor, const FVector& start, const FVector& end, const AActor* ignore_actor = nullptr, ECollisionChannel collison_channel = ECC_Visibility);
-    static bool GetObstacle(const AActor* actor, const FVector& start, const FVector& end, FHitResult& hit, const AActor* ignore_actor = nullptr, ECollisionChannel collison_channel = ECC_Visibility);
-    static bool GetLastObstaclePosition(const AActor* actor, const FVector& start, const FVector& end, FHitResult& hit, const AActor* ignore_actor = nullptr, ECollisionChannel collison_channel = ECC_Visibility);
+    static bool HasObstacle(const AActor* actor, const FVector& start, const FVector& end, const AActor* ignore_actor = nullptr, ECollisionChannel collision_channel = ECC_Visibility);
+    static bool GetObstacle(const AActor* actor, const FVector& start, const FVector& end, FHitResult& hit, const AActor* ignore_actor = nullptr, ECollisionChannel collision_channel = ECC_Visibility);
+    static bool GetLastObstaclePosition(const AActor* actor, const FVector& start, const FVector& end, FHitResult& hit, const AActor* ignore_actor = nullptr, ECollisionChannel collision_channel = ECC_Visibility);
     static void FollowActor(AActor* follower, const AActor* followee, const FVector& offset, bool fixed_z = false, float fixed_z_val = 2.0f);
+
+    static bool SetMeshStencilID(const std::string& mesh_name, int object_id,
+        bool is_name_regex = false);
+    static int GetMeshStencilID(const std::string& mesh_name);
+    static void InitializeMeshStencilIDs();
+    static std::string GetMeshName(UMeshComponent* mesh);
 
     template<class UserClass>
     static FInputActionBinding& BindActionToKey(const FName action_name, const FKey in_key, UserClass* actor,
@@ -59,6 +66,10 @@ public:
     static int RemoveAxisBinding(const FInputAxisKeyMapping& axis, FInputAxisBinding* axis_binding, AActor* actor);
 
     static void EnableInput(AActor* actor);
+
+    static void RunCommandOnGameThread(TFunction<void()> InFunction, bool wait = false, const TStatId InStatId = TStatId());
+
+    static float GetDisplayGamma();
 
     static bool getLogMessagesHidden()
     {

@@ -9,7 +9,18 @@ ASimModeCar::ASimModeCar()
     external_camera_class_ = external_camera_class.Succeeded() ? external_camera_class.Class : nullptr;
     static ConstructorHelpers::FClassFinder<ACameraDirector> camera_director_class(TEXT("Blueprint'/AirSim/Blueprints/BP_CameraDirector'"));
     camera_director_class_ = camera_director_class.Succeeded() ? camera_director_class.Class : nullptr;
-    vehicle_pawn_class_ = ACarPawn::StaticClass();
+
+    //Try to find the high polycount vehicle
+    //If not found, spawn the default class (go-kart)
+    static ConstructorHelpers::FClassFinder<ACarPawn> vehicle_pawn_class(TEXT("Blueprint'/AirSim/VehicleAdv/SUV/SuvCarPawn'"));
+    if (vehicle_pawn_class.Succeeded()) {
+        vehicle_pawn_class_ = vehicle_pawn_class.Class;
+        follow_distance_ = -800;
+    }
+    else {
+        vehicle_pawn_class_ = ACarPawn::StaticClass();
+        follow_distance_ = -225;
+    }
 }
 
 void ASimModeCar::BeginPlay()
@@ -17,6 +28,12 @@ void ASimModeCar::BeginPlay()
     Super::BeginPlay();
 
     createVehicles(vehicles_);
+
+    // Timestamp \t Speed \t Throttle \t Steering \t Brake \t gear \t ImageName
+    columns = { "Timestamp", "Speed (kmph)", "Throttle" , "Steering", "Brake", "Gear", "ImageName" };
+
+    report_wrapper_.initialize(false);
+    report_wrapper_.reset();
 }
 
 void ASimModeCar::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -41,7 +58,7 @@ void ASimModeCar::setupVehiclesAndCamera(std::vector<VehiclePtr>& vehicles)
     APlayerController* player_controller = this->GetWorld()->GetFirstPlayerController();
     FTransform actor_transform = player_controller->GetActorTransform();
     //put camera little bit above vehicle
-    FTransform camera_transform(actor_transform.GetLocation() + FVector(-300, 0, 200));
+    FTransform camera_transform(actor_transform.GetLocation() + FVector(300, 0, 200));
 
     //we will either find external camera if it already exist in evironment or create one
     APIPCamera* external_camera;
@@ -55,6 +72,10 @@ void ASimModeCar::setupVehiclesAndCamera(std::vector<VehiclePtr>& vehicles)
             FActorSpawnParameters camera_spawn_params;
             camera_spawn_params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
             CameraDirector = this->GetWorld()->SpawnActor<ACameraDirector>(camera_director_class_, camera_transform, camera_spawn_params);
+            CameraDirector->setFollowDistance(follow_distance_);
+            CameraDirector->setCameraRotationLagEnabled(true);
+            CameraDirector->setFpvCameraIndex(3);
+            CameraDirector->enableBackupCameraMode(4);
             spawned_actors_.Add(CameraDirector);
 
             //create external camera required for the director
@@ -76,7 +97,7 @@ void ASimModeCar::setupVehiclesAndCamera(std::vector<VehiclePtr>& vehicles)
         if (pawns.Num() == 0) {
             //create vehicle pawn
             FActorSpawnParameters pawn_spawn_params;
-            pawn_spawn_params.SpawnCollisionHandlingOverride = 
+            pawn_spawn_params.SpawnCollisionHandlingOverride =
                 ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
             TVehiclePawn* spawned_pawn = this->GetWorld()->SpawnActor<TVehiclePawn>(
                 vehicle_pawn_class_, actor_transform, pawn_spawn_params);
@@ -90,12 +111,13 @@ void ASimModeCar::setupVehiclesAndCamera(std::vector<VehiclePtr>& vehicles)
         {
             //initialize each vehicle pawn we found
             TVehiclePawn* vehicle_pawn = static_cast<TVehiclePawn*>(pawn);
-            vehicle_pawn->initializeForBeginPlay(enable_rpc, api_server_address);
+            vehicles.push_back(vehicle_pawn);
+            vehicle_pawn->initializeForBeginPlay(enable_rpc, api_server_address, engine_sound);
 
             //chose first pawn as FPV if none is designated as FPV
             VehiclePawnWrapper* wrapper = vehicle_pawn->getVehiclePawnWrapper();
             if (enable_collision_passthrough)
-                wrapper->config.enable_passthrough_on_collisions = true;  
+                wrapper->config.enable_passthrough_on_collisions = true;
             if (wrapper->config.is_fpv_vehicle || fpv_vehicle_pawn_wrapper_ == nullptr)
                 fpv_vehicle_pawn_wrapper_ = wrapper;
         }
@@ -112,5 +134,58 @@ void ASimModeCar::createVehicles(std::vector<VehiclePtr>& vehicles)
     setupVehiclesAndCamera(vehicles);
 }
 
+void ASimModeCar::reset()
+{
+    //find all vehicle pawns
+    {
+        TArray<AActor*> pawns;
+        UAirBlueprintLib::FindAllActor<TVehiclePawn>(this, pawns);
 
+        //set up vehicle pawns
+        for (AActor* pawn : pawns)
+        {
+            //initialize each vehicle pawn we found
+            TVehiclePawn* vehicle_pawn = static_cast<TVehiclePawn*>(pawn);
+            vehicle_pawn->reset();
+        }
+    }
 
+    Super::reset();
+}
+
+void ASimModeCar::Tick(float DeltaSeconds)
+{
+    report_wrapper_.update();
+    report_wrapper_.setEnable(EnableReport);
+
+    if (report_wrapper_.canReport()) {
+        report_wrapper_.clearReport();
+        updateReport();
+    }
+}
+
+void ASimModeCar::updateReport()
+{
+    for (VehiclePtr vehicle : vehicles_) {
+        VehiclePawnWrapper* wrapper = vehicle->getVehiclePawnWrapper();
+        msr::airlib::StateReporter& reporter = * report_wrapper_.getReporter();
+        std::string vehicle_name = std::string(TCHAR_TO_UTF8(* wrapper->config.vehicle_config_name));
+
+        reporter.writeHeading(std::string("Vehicle: ").append(
+            vehicle_name == "" ? "(default)" : vehicle_name));
+
+        const msr::airlib::Kinematics::State* kinematics = wrapper->getKinematics();
+
+        reporter.writeValue("Position", kinematics->pose.position);
+        reporter.writeValue("Orientation", kinematics->pose.orientation);
+        reporter.writeValue("Lin-Vel", kinematics->twist.linear);
+        reporter.writeValue("Lin-Accl", kinematics->accelerations.linear);
+        reporter.writeValue("Ang-Vel", kinematics->twist.angular);
+        reporter.writeValue("Ang-Accl", kinematics->accelerations.angular);
+    }
+}
+
+std::string ASimModeCar::getReport()
+{
+    return report_wrapper_.getOutput();
+}

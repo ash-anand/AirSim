@@ -42,7 +42,7 @@ First make sure you have below in [settings.json](settings.md). This is because 
 
 ```
 {
-  "SettingdVersion": 1.0,
+  "SettingsVersion": 1.0,
   "SimMode": "Car"
 }
 ```
@@ -63,12 +63,12 @@ int main()
     controls.throttle = 1;
     client.setCarControls(controls);
 
-    std::cout << "Press Enter to activate handbreak" << std::endl; std::cin.get();
-    controls.handbreak = true;
+    std::cout << "Press Enter to activate handbrake" << std::endl; std::cin.get();
+    controls.handbrake = true;
     client.setCarControls(controls);
 
     std::cout << "Press Enter to take turn and drive backward" << std::endl; std::cin.get();
-    controls.handbreak = false;
+    controls.handbrake = false;
     controls.throttle = -1;
     controls.steering = 1;
     client.setCarControls(controls);
@@ -84,14 +84,22 @@ int main()
 You can find a ready to run project in HelloCar folder in the repository.
 
 ## Image / Computer Vision and Collision APIs
-AirSim offers comprehensive images APIs to retrieve synchronized images from multiple cameras along with ground truth including depth, disparity, surface normals and vision. You can set the resolution, FOV, motion blur etc parameters in [settings.json](settings.md). There is also API for detecting collision state. See also [complete code](../Examples/StereoImageGenerator.hpp) that generates specified number of stereo images and ground truth depth with normalization to camera plan, computation of disparity image and saving it to pfm format.
+AirSim offers comprehensive images APIs to retrieve synchronized images from multiple cameras along with ground truth including depth, disparity, surface normals and vision. You can set the resolution, FOV, motion blur etc parameters in [settings.json](settings.md). There is also API for detecting collision state. See also [complete code](../Examples/StereoImageGenerator.hpp) that generates specified number of stereo images and ground truth depth with normalization to camera plan, computation of disparity image and saving it to [pfm format](pfm.md).
 
 More on [image APIs and Computer Vision mode](image_apis.md).
+
+### Common APIs
+
+* `reset`: This resets the vehicle to its original starting state.
+* `confirmConnection`: Checks state of connection every 1 sec and reports it in Console so user can see the progress for connection.
+* `enableApiControl`: For safety reasons, by default API control for autonomous vehicle is not enabled and human operator has full control (usually via RC or joystick in simulator). The client must make this call to request control via API. It is likely that human operator of vehicle might have disallowed API control which would mean that enableApiControl has no effect. This can be checked by `isApiControlEnabled`.
+* `isApiControlEnabled`: Returns true if API control is established. If false (which is default) then API calls would be ignored. After a successful call to `enableApiControl`, the `isApiControlEnabled` should return true.
+* `ping`: If connection is established then this call will return true otherwise it will be blocked until timeout.
 
 ### APIs for Car
 Car has followings APIs available:
 
-* `setCarControls`: This allows you to set throttle, steering, handbreak and auto or manual gear.
+* `setCarControls`: This allows you to set throttle, steering, handbrake and auto or manual gear.
 * `getCarState`: This retrieves the state information including speed, current gear, velocity vector, position and orientation.
 * [Image APIs](image_apis.md).
 
@@ -107,10 +115,14 @@ Methods that take `float max_wait_seconds`, like `takeoff`, `land`, `moveOnPath`
 if the `max_wait_seconds` times out they will return `false`.  If you want to wait for ever pass a big number. But if you want to be able to interrupt even these commands pass 0 and you can do something else or sleep in a loop while checking the drone position, etc. We would not recommend interrupting takeoff/land on a real drone, of course, as the results may be unpredictable.
 
 #### drivetrain
-Many APIs take `drivetrain` parameter which specifies how vehicle is oriented while it moves. For example, a quadrotor may move in West direction while its front is pointing towards North. In fact, quad rotors can move in all 3 axis while its front is pointing to any direction. In this mode of movement, vehicle uses its maximum degree of freedom. In forward-only mode, vehicle move only in the direction its pointing to. So if quadrotor is pointing to North and if we want it to move along West then we must reorient it. This mode is useful if we have only one sensor in the front.
+There are two modes you can fly vehicle: `Drivetrain = ForwardOnly` and `Drivetrain = MaxDegreeOfFreedom`. When you specify ForwardOnly, you are saying that vehicle's front should always point in the direction of travel. So if you want drone to take left turn then it would first rotate so front points to left. This mode is useful when you have only front camera and you are operating vehicle using FPV view. This is more or less like travelling in car where you always have front view. The MaxDegreeOfFreedom means you don't care where the front points to. So when you take left turn, you just start going left like crab. Quadrotors can go in any direction regardless of where front points to. The MaxDegreeOfFreedom enables this mode.
 
 #### yaw_mode
-Many APIs take `yaw_mode` parameter which specifies where vehicle should be pointing to. For example, you may want to move quadrotor while its front is pointing to North-East which means you will set `YawMode::is_rate = false` and `YawMode::yaw_or_rate = 90` (angle unit is degrees for Yaw). In some weired world, you might want your vehicle to continuously rotate at, say 20-degrees/sec, while it moves. YawMode allows you to specify that by setting  `YawMode::is_rate = true` and `YawMode::yaw_or_rate = 20`. However in more sane scenarios, you just don't want yaw to change which you can do by setting yaw rate of 0. The shothand for this is `YawMode::Zero()`. 
+`yaw_mode` has two fields, `yaw_or_rate` and `is_rate`. If is_rate = true then yaw_or_rate is interpreted as angular velocity in degrees/sec which means you want vehicle to rotate continuously around its axis at that angular velocity while moving. If is_rate = false then yaw_or_rate is interpreted as angle in degrees which means you want vehicle to rotate to specific angle (i.e. yaw) and keep that angle while moving. 
+
+You can probably see that YawMode::is_rate = true is pointless in ForwardOnly mode because you are contradicting by saying that keep front pointing ahead but also rotate continuously. However if you have YawMode::is_rate = false in ForwardOnly then you can do some funky stuff. For example, you can have drone do circles and have YawMode::yaw_or_rate = 90 so camera is always pointed to center ("super cool selfie mode"). In MaxDegreeofFreedom, you can get some funky stuff by setting YawMode::is_rate = true and say YawMode::yaw_or_rate = 20. This will cause drone to go in its path while rotating which may allow to do 360 scanning.
+
+In most cases, you just don't want yaw to change which you can do by setting yaw rate of 0. The shothand for this is `YawMode::Zero()`. 
 
 #### lookahead and adaptive_lookahead
 When you ask vehicle to follow a path, AirSim uses "carrot following" algorithm. This algorithm operates by looking ahead on path and adjusting its velocity vector. The parameters for this algorithm is specified by `lookahead` and `adaptive_lookahead`. For most of the time you want algorithm to auto-decide the values by simply setting `lookahead = -1` and `adaptive_lookahead = 0`.

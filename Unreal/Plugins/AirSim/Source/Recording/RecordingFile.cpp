@@ -7,16 +7,22 @@
 #include "common/common_utils/FileSystem.hpp"
 
 
-void RecordingFile::appendRecord(TArray<uint8>& image_data, const msr::airlib::PhysicsBody* physics_body)
+RecordingFile::RecordingFile(std::vector <std::string> columns)
+{
+    this->columns = columns;
+}
+void RecordingFile::appendRecord(TArray<uint8>& image_data, VehiclePawnWrapper* wrapper)
 {
     if (image_data.Num() == 0)
         return;
 
     bool imageSavedOk = false;
     FString filePath;
+
+    std::string filename = std::string("img_").append(std::to_string(images_saved_)).append(".png");
+
     try {    
-        FString image_path = FString(common_utils::FileSystem::getLogFileNamePath("img_", "", "", false).c_str());
-        filePath = image_path + FString::FromInt(images_saved_) + ".png";
+        filePath = FString(common_utils::FileSystem::combine(image_path_, filename).c_str());
         imageSavedOk = FFileHelper::SaveArrayToFile(image_data, *filePath);
     }
     catch(std::exception& ex) {
@@ -25,41 +31,23 @@ void RecordingFile::appendRecord(TArray<uint8>& image_data, const msr::airlib::P
     // If render command is complete, save image along with position and orientation
 
     if (imageSavedOk) {
-        auto kinematics = physics_body->getKinematics();
+        writeString(wrapper->getLogLine().append(filename).append("\n"));
 
-        writeString(getLine(kinematics));
-
-        UAirBlueprintLib::LogMessage(TEXT("Screenshot saved to:"), filePath, LogDebugLevel::Success);
+        //UAirBlueprintLib::LogMessage(TEXT("Screenshot saved to:"), filePath, LogDebugLevel::Success);
         images_saved_++;
     }
 }
 
-std::string RecordingFile::getLine(const msr::airlib::Kinematics::State& kinematics)
+void RecordingFile::appendColumnHeader(std::vector <std::string> columns)
 {
-    uint64_t timestamp_millis = static_cast<uint64_t>(msr::airlib::ClockFactory::get()->nowNanos() / 1.0E6);
-
-    //TODO: because this bug we are using alternative code with stringstream
-    //https://answers.unrealengine.com/questions/664905/unreal-crashes-on-two-lines-of-extremely-simple-st.html
-
     std::string line;
-    line.append(std::to_string(timestamp_millis)).append("\t")
-        .append(std::to_string(kinematics.pose.position.x())).append("\t")
-        .append(std::to_string(kinematics.pose.position.y())).append("\t")
-        .append(std::to_string(kinematics.pose.position.z())).append("\t")
-        .append(std::to_string(kinematics.pose.orientation.w())).append("\t")
-        .append(std::to_string(kinematics.pose.orientation.x())).append("\t")
-        .append(std::to_string(kinematics.pose.orientation.y())).append("\t")
-        .append(std::to_string(kinematics.pose.orientation.z())).append("\t")
-        .append("\n");
+    for (int i = 0; i < columns.size()-1; i++) 
+    {
+        line.append(columns[i]).append("\t");
+    }
+    line.append(columns[columns.size() - 1]).append("\n");
 
-    return line;
-
-    //std::stringstream ss;
-    //ss << timestamp_millis << "\t";
-    //ss << kinematics.pose.position.x() << "\t" << kinematics.pose.position.y() << "\t" << kinematics.pose.position.z() << "\t";
-    //ss << kinematics.pose.orientation.w() << "\t" << kinematics.pose.orientation.x() << "\t" << kinematics.pose.orientation.y() << "\t" << kinematics.pose.orientation.z() << "\t";
-    //ss << "\n";
-    //return ss.str();
+    writeString(line);
 }
 
 void RecordingFile::createFile(const std::string& file_path)
@@ -69,6 +57,7 @@ void RecordingFile::createFile(const std::string& file_path)
 
         IPlatformFile& platform_file = FPlatformFileManager::Get().GetPlatformFile();
         log_file_handle_ = platform_file.OpenWrite(*FString(file_path.c_str()));
+        appendColumnHeader(this->columns);
     }
     catch(std::exception& ex) {
         UAirBlueprintLib::LogMessageString(std::string("createFile Failed for ") + file_path, ex.what(), LogDebugLevel::Failure);        
@@ -96,7 +85,7 @@ void RecordingFile::writeString(const std::string& str)
             log_file_handle_->Write((const uint8*)TCHAR_TO_ANSI(*line_f), line_f.Len());
         }
         else
-            UAirBlueprintLib::LogMessageString("Attempt to write to recording loh file when file was not opened", "", LogDebugLevel::Failure);
+            UAirBlueprintLib::LogMessageString("Attempt to write to recording log file when file was not opened", "", LogDebugLevel::Failure);
     }
     catch(std::exception& ex) {
         UAirBlueprintLib::LogMessageString(std::string("file write to recording file failed "), ex.what(), LogDebugLevel::Failure);        
@@ -105,26 +94,17 @@ void RecordingFile::writeString(const std::string& str)
 
 RecordingFile::~RecordingFile()
 {
-    closeFile();
-}
-
-std::string RecordingFile::getLogFileFullPath()
-{
-    try {
-        return common_utils::FileSystem::getLogFileNamePath(record_filename, "", ".txt", true);
-    }
-    catch(std::exception& ex) {
-        UAirBlueprintLib::LogMessageString(std::string("getLogFileFullPath failed: "), ex.what(), LogDebugLevel::Failure); 
-        return "";  
-    }
+    stopRecording(true);
 }
 
 void RecordingFile::startRecording()
 {
     try {
-        std::string fullPath = getLogFileFullPath();
-        if (fullPath != "")
-            createFile(fullPath);
+        std::string log_folderpath = common_utils::FileSystem::getLogFolderPath(true);
+        image_path_ = common_utils::FileSystem::ensureFolder(log_folderpath, "images");
+        std::string log_filepath = common_utils::FileSystem::getLogFileNamePath(log_folderpath, record_filename, "", ".txt", false);
+        if (log_filepath != "")
+            createFile(log_filepath);
         else {
             UAirBlueprintLib::LogMessageString("Cannot start recording because path for log file is not available", "", LogDebugLevel::Failure);
             return;
@@ -133,26 +113,30 @@ void RecordingFile::startRecording()
         if (isFileOpen()) {
             is_recording_ = true;
 
-            UAirBlueprintLib::LogMessage(TEXT("Recording"), TEXT("Started"), LogDebugLevel::Success);
+            UAirBlueprintLib::LogMessage(TEXT("Recording: "), TEXT("Started"), LogDebugLevel::Success);
         }
         else
-            UAirBlueprintLib::LogMessageString("Error creating log file", fullPath.c_str(), LogDebugLevel::Failure);
+            UAirBlueprintLib::LogMessageString("Error creating log file", log_filepath.c_str(), LogDebugLevel::Failure);
     }
     catch(...) {
         UAirBlueprintLib::LogMessageString("Error in startRecording", "", LogDebugLevel::Failure);
     }
 }
 
-void RecordingFile::stopRecording()
+void RecordingFile::stopRecording(bool ignore_if_stopped)
 {
     is_recording_ = false;
     if (! isFileOpen()) {
+        if (ignore_if_stopped)
+            return;
+
         UAirBlueprintLib::LogMessage(TEXT("Recording Error"), TEXT("File was not open"), LogDebugLevel::Failure);
     }
     else
         closeFile();
 
-    UAirBlueprintLib::LogMessage(TEXT("Recording"), TEXT("Stopped"), LogDebugLevel::Success);
+    UAirBlueprintLib::LogMessage(TEXT("Recording: "), TEXT("Stopped"), LogDebugLevel::Success);
+    UAirBlueprintLib::LogMessage(TEXT("Data saved to: "), FString(image_path_.c_str()), LogDebugLevel::Success);
 }
 
 bool RecordingFile::isRecording()

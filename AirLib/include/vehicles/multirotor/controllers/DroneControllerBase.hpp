@@ -8,7 +8,6 @@
 #include "common/Common.hpp"
 #include "controllers/VehicleControllerBase.hpp"
 #include "common/common_utils/WorkerThread.hpp"
-#include "controllers/VehicleCameraBase.hpp"
 #include "controllers/Waiter.hpp"
 #include "safety/SafetyEval.hpp"
 #include "common/CommonStructs.hpp"
@@ -210,7 +209,7 @@ public: //interface for outside world
     virtual GeoPoint getGpsLocation() = 0;
 
     //below are for passing information from simulator to API layer
-    //in non simulation mode default would be no collison unless
+    //in non simulation mode default would be no collision unless
     //controller implements otherwise.
     virtual CollisionInfo getCollisionInfo();
     virtual void setCollisionInfo(const CollisionInfo& collision_info);
@@ -220,18 +219,6 @@ public: //interface for outside world
     virtual bool setSafety(SafetyEval::SafetyViolationType enable_reasons, float obs_clearance, SafetyEval::ObsAvoidanceStrategy obs_startegy,
         float obs_avoidance_vel, const Vector3r& origin, float xy_length, float max_z, float min_z);
     virtual const VehicleParams& getVehicleParams() = 0;
-
-
-    //TODO: methods that are only valid for simulation mode should be prefixed with "sim"
-    virtual void simSetPose(const Vector3r& position, const Quaternionr& orientation);
-    /// Request an image of specific type from the specified camera.  Currently default pawn is configured with only 2 cameras which
-    /// have id of 0 and 1, right and left respectively.  Camera 0 is is always FPV camera view
-    /// The image is return in the .png format.  This call will block until the render is complete.  
-    virtual vector<VehicleCameraBase::ImageResponse> simGetImages(const vector<VehicleCameraBase::ImageRequest>& request);
-    void simAddCamera(VehicleCameraBase* camera);
-    VehicleCameraBase* simGetCamera(int index);
-    //notifies the controller that rendering was completed by simulated
-    virtual void simNotifyRender();
 
     //*********************************common pre & post for move commands***************************************************
     //TODO: make these protected
@@ -350,9 +337,8 @@ private: //methods
 private:// vars
     shared_ptr<SafetyEval> safety_eval_ptr_;
     float obs_avoidance_vel_ = 0.5f;
-    bool log_to_file_ = false;
+
     CollisionInfo collision_info_;
-    vector<VehicleCameraBase*> cameras_;
 
     // we make this recursive so that DroneControllerBase subclass can grab StatusLock then call a 
     // base class method on DroneControllerBase that also grabs the StatusLock.

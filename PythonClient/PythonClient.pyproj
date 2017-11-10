@@ -5,13 +5,17 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>e2049e20-b6dd-474e-8bca-1c8dc54725aa</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>hello_drone.py</StartupFile>
+    <StartupFile>segmentation.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
     <Name>PythonClient</Name>
     <RootNamespace>PythonClient</RootNamespace>
+    <InterpreterId>
+    </InterpreterId>
+    <InterpreterVersion>
+    </InterpreterVersion>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -28,6 +32,9 @@
     <Compile Include="camera.py">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="car_collision.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="cv_mode.py">
       <SubType>Code</SubType>
     </Compile>
@@ -37,6 +44,9 @@
     <Compile Include="hello_drone.py">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="infrared.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="navigate.py">
       <SubType>Code</SubType>
     </Compile>
@@ -44,7 +54,10 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="pfm.py" />
-    <Compile Include="PythonClient.py" />
+    <Compile Include="AirSimClient.py" />
+    <Compile Include="segmentation.py">
+      <SubType>Code</SubType>
+    </Compile>
   </ItemGroup>
   <PropertyGroup>
     <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</VisualStudioVersion>

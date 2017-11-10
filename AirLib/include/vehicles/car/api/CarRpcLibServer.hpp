@@ -6,21 +6,18 @@
 
 #include "common/Common.hpp"
 #include <functional>
-#include "api/ControlServerBase.hpp"
-#include "vehicles/car/controllers/CarControllerBase.hpp"
+#include "api/RpcLibServerBase.hpp"
+#include "vehicles/car/api/CarApiBase.hpp"
 
 namespace msr { namespace airlib {
 
-class CarRpcLibServer : public ControlServerBase {
+class CarRpcLibServer : public RpcLibServerBase {
 public:
-    CarRpcLibServer(CarControllerBase* vehicle, string server_address, uint16_t port = 42451);
-    virtual void start(bool block = false) override;
-    virtual void stop() override;
-    virtual ~CarRpcLibServer() override;
+    CarRpcLibServer(CarApiBase* vehicle, string server_address, uint16_t port = 42451);
+    virtual ~CarRpcLibServer();
+
 private:
-    CarControllerBase* vehicle_;
-    struct impl;
-    std::unique_ptr<impl> pimpl_;
+    CarApiBase* getCarApi();
 };
 
 }} //namespace

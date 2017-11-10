@@ -12,11 +12,11 @@
 #include "WheeledVehicleMovementComponent4W.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Controller.h"
-#include "vehicles/car/controllers/CarControllerBase.hpp"
+#include "vehicles/car/api/CarApiBase.hpp"
 #include "AirBlueprintLib.h"
 #include "NedTransform.h"
+#include "common/ClockFactory.hpp"
 #include "PIPCamera.h"
-#include "VehicleCameraConnector.h"
 #include <vector>
 #include "UObject/ConstructorHelpers.h"
 
@@ -31,19 +31,14 @@ const FName ACarPawn::EngineAudioRPM("RPM");
 
 #define LOCTEXT_NAMESPACE "VehiclePawn"
 
-class ACarPawn::CarController : public msr::airlib::CarControllerBase {
+class ACarPawn::CarApi : public msr::airlib::CarApiBase {
 public:
-    typedef msr::airlib::CarControllerBase CarControllerBase;
+    typedef msr::airlib::CarApiBase CarApiBase;
     typedef msr::airlib::VehicleCameraBase VehicleCameraBase;
 
-    CarController(ACarPawn* car_pawn)
+    CarApi(ACarPawn* car_pawn)
         : car_pawn_(car_pawn)
     {
-        for (int i = 0; i < car_pawn->getVehiclePawnWrapper()->getCameraCount(); ++i) {
-            cameras_.push_back(
-                std::unique_ptr<VehicleCameraConnector>(new VehicleCameraConnector(
-                    car_pawn->getVehiclePawnWrapper()->getCamera())));
-        }
     }
 
     virtual std::vector<VehicleCameraBase::ImageResponse> simGetImages(
@@ -52,14 +47,32 @@ public:
         std::vector<VehicleCameraBase::ImageResponse> response;
 
         for (const auto& item : request) {
-            if (item.camera_id < 0 || item.camera_id >= cameras_.size())
-                throw std::out_of_range("Camera id is not valid");
-            VehicleCameraBase* camera = cameras_.at(item.camera_id).get();
+            VehicleCameraBase* camera = car_pawn_->getVehiclePawnWrapper()->getCameraConnector(item.camera_id);
             const auto& item_response = camera->getImage(item.image_type, item.pixels_as_float, item.compress);
             response.push_back(item_response);
         }
 
         return response;
+    }
+
+    virtual bool simSetSegmentationObjectID(const std::string& mesh_name, int object_id, 
+        bool is_name_regex = false) override
+    {
+        bool success;
+        UAirBlueprintLib::RunCommandOnGameThread([mesh_name, object_id, is_name_regex, &success]() {
+            success = UAirBlueprintLib::SetMeshStencilID(mesh_name, object_id, is_name_regex);
+        }, true);
+        return success;
+    }
+    
+    virtual int simGetSegmentationObjectID(const std::string& mesh_name) override
+    {
+        return UAirBlueprintLib::GetMeshStencilID(mesh_name);
+    }
+
+    virtual msr::airlib::CollisionInfo getCollisionInfo() override
+    {
+        return car_pawn_->getVehiclePawnWrapper()->getCollisionInfo();
     }
 
     virtual std::vector<uint8_t> simGetImage(uint8_t camera_id, VehicleCameraBase::ImageType image_type) override
@@ -72,28 +85,53 @@ public:
             return std::vector<uint8_t>();
     }
 
-    virtual void setCarControls(const CarControllerBase::CarControls& controls) override
+    virtual void setCarControls(const CarApiBase::CarControls& controls) override
     {
         UWheeledVehicleMovementComponent* movement = car_pawn_->GetVehicleMovementComponent();
-        movement->SetThrottleInput(controls.throttle);
-        movement->SetSteeringInput(controls.steering);
-        movement->SetHandbrakeInput(controls.handbreak);
 
-        if (movement->GetUseAutoGears() != !controls.is_manual_gear)
-            movement->SetUseAutoGears(!controls.is_manual_gear);
+        if (!controls.is_manual_gear && movement->GetTargetGear() < 0)
+            movement->SetTargetGear(0, true); //in auto gear we must have gear >= 0
         if (controls.is_manual_gear && movement->GetTargetGear() != controls.manual_gear)
             movement->SetTargetGear(controls.manual_gear, controls.gear_immediate);
+
+        movement->SetThrottleInput(controls.throttle);
+        movement->SetSteeringInput(controls.steering);
+        movement->SetBrakeInput(controls.brake);
+        movement->SetHandbrakeInput(controls.handbrake);
+        movement->SetUseAutoGears(!controls.is_manual_gear);
     }
 
-    virtual CarControllerBase::CarState getCarState() override
+    virtual CarApiBase::CarState getCarState() override
     {
-        CarControllerBase::CarState state(
+        CarApiBase::CarState state(
             car_pawn_->GetVehicleMovement()->GetForwardSpeed(),
             car_pawn_->GetVehicleMovement()->GetCurrentGear(),
             NedTransform::toNedMeters(car_pawn_->GetActorLocation(), true),
             NedTransform::toNedMeters(car_pawn_->GetVelocity(), true),
-            NedTransform::toQuaternionr(car_pawn_->GetActorRotation().Quaternion(), true));
+            NedTransform::toQuaternionr(car_pawn_->GetActorRotation().Quaternion(), true),
+            car_pawn_->getVehiclePawnWrapper()->getCollisionInfo(),
+            msr::airlib::ClockFactory::get()->nowNanos()
+        );
         return state;
+    }
+
+    virtual void reset() override
+    {
+        UAirBlueprintLib::RunCommandOnGameThread([this]() {
+            this->car_pawn_->reset(false);
+        }, true);
+    }
+
+    virtual void simSetPose(const Pose& pose, bool ignore_collision) override
+    {
+        UAirBlueprintLib::RunCommandOnGameThread([this, pose, ignore_collision]() {
+            this->car_pawn_->getVehiclePawnWrapper()->setPose(pose, ignore_collision);
+        }, true);
+    }
+
+    virtual Pose simGetPose() override
+    {
+        return this->car_pawn_->getVehiclePawnWrapper()->getPose();
     }
 
     virtual msr::airlib::GeoPoint getHomeGeoPoint() override
@@ -111,12 +149,10 @@ public:
         return car_pawn_->isApiControlEnabled();
     }
 
-    virtual ~CarController() = default;
+    virtual ~CarApi() = default;
 
 private:
     ACarPawn* car_pawn_;
-    std::vector<std::unique_ptr<VehicleCameraConnector>> cameras_;
-
 };
 
 ACarPawn::ACarPawn()
@@ -127,7 +163,7 @@ ACarPawn::ACarPawn()
     // Car mesh
     static ConstructorHelpers::FObjectFinder<USkeletalMesh> CarMesh(TEXT("/AirSim/VehicleAdv/Vehicle/Vehicle_SkelMesh.Vehicle_SkelMesh"));
     GetMesh()->SetSkeletalMesh(CarMesh.Object);
-    
+
     static ConstructorHelpers::FClassFinder<UObject> AnimBPClass(TEXT("/AirSim/VehicleAdv/Vehicle/VehicleAnimationBlueprint"));
     GetMesh()->SetAnimationMode(EAnimationMode::AnimationBlueprint);
     GetMesh()->SetAnimInstanceClass(AnimBPClass.Class);
@@ -135,7 +171,7 @@ ACarPawn::ACarPawn()
     // Setup friction materials
     static ConstructorHelpers::FObjectFinder<UPhysicalMaterial> SlipperyMat(TEXT("/AirSim/VehicleAdv/PhysicsMaterials/Slippery.Slippery"));
     SlipperyMaterial = SlipperyMat.Object;
-        
+
     static ConstructorHelpers::FObjectFinder<UPhysicalMaterial> NonSlipperyMat(TEXT("/AirSim/VehicleAdv/PhysicsMaterials/NonSlippery.NonSlippery"));
     NonSlipperyMaterial = NonSlipperyMat.Object;
 
@@ -166,28 +202,28 @@ ACarPawn::ACarPawn()
 
     // Adjust the tire loading
     Vehicle4W->MinNormalizedTireLoad = 0.0f;
-    Vehicle4W->MinNormalizedTireLoadFiltered = 0.2f;
+    Vehicle4W->MinNormalizedTireLoadFiltered = 0.2308f;
     Vehicle4W->MaxNormalizedTireLoad = 2.0f;
     Vehicle4W->MaxNormalizedTireLoadFiltered = 2.0f;
 
     // Engine 
     // Torque setup
-    Vehicle4W->MaxEngineRPM = 5700.0f;
+    Vehicle4W->EngineSetup.MaxRPM = 5700.0f;
     Vehicle4W->EngineSetup.TorqueCurve.GetRichCurve()->Reset();
     Vehicle4W->EngineSetup.TorqueCurve.GetRichCurve()->AddKey(0.0f, 400.0f);
     Vehicle4W->EngineSetup.TorqueCurve.GetRichCurve()->AddKey(1890.0f, 500.0f);
     Vehicle4W->EngineSetup.TorqueCurve.GetRichCurve()->AddKey(5730.0f, 400.0f);
- 
+
     // Adjust the steering 
     Vehicle4W->SteeringCurve.GetRichCurve()->Reset();
     Vehicle4W->SteeringCurve.GetRichCurve()->AddKey(0.0f, 1.0f);
     Vehicle4W->SteeringCurve.GetRichCurve()->AddKey(40.0f, 0.7f);
     Vehicle4W->SteeringCurve.GetRichCurve()->AddKey(120.0f, 0.6f);
-            
+
     // Transmission	
     // We want 4wd
     Vehicle4W->DifferentialSetup.DifferentialType = EVehicleDifferential4W::LimitedSlip_4W;
-    
+
     // Drive the front wheels a little more than the rear
     Vehicle4W->DifferentialSetup.FrontRearSplit = 0.65;
 
@@ -195,6 +231,9 @@ ACarPawn::ACarPawn()
     Vehicle4W->TransmissionSetup.bUseGearAutoBox = true;
     Vehicle4W->TransmissionSetup.GearSwitchTime = 0.15f;
     Vehicle4W->TransmissionSetup.GearAutoBoxLatency = 1.0f;
+
+    // Disable reverse as brake, this is needed for SetBreakInput() to take effect
+    Vehicle4W->bReverseAsBrake = false;
 
     // Physics settings
     // Adjust the center of mass - the buggy is quite low
@@ -206,17 +245,25 @@ ACarPawn::ACarPawn()
 
     // Set the inertia scale. This controls how the mass of the vehicle is distributed.
     Vehicle4W->InertiaTensorScale = FVector(1.0f, 1.333f, 1.2f);
+    Vehicle4W->bDeprecatedSpringOffsetMode = true;
 
     // Create In-Car camera component 
     InternalCameraBase1 = CreateDefaultSubobject<USceneComponent>(TEXT("InternalCameraBase1"));
-    InternalCameraBase1->SetRelativeLocation(FVector(-34.0f, 0, 50.0f));
+    InternalCameraBase1->SetRelativeLocation(FVector(36.0f, 0, 50.0f)); //center
     InternalCameraBase1->SetupAttachment(GetMesh());
     InternalCameraBase2 = CreateDefaultSubobject<USceneComponent>(TEXT("InternalCameraBase2"));
-    InternalCameraBase2->SetRelativeLocation(FVector(-34.0f, -10, 50.0f));
+    InternalCameraBase2->SetRelativeLocation(FVector(36.0f, -10, 50.0f)); //left
     InternalCameraBase2->SetupAttachment(GetMesh());
     InternalCameraBase3 = CreateDefaultSubobject<USceneComponent>(TEXT("InternalCameraBase3"));
-    InternalCameraBase3->SetRelativeLocation(FVector(-34.0f, 10, 50.0f));
+    InternalCameraBase3->SetRelativeLocation(FVector(36.0f, 10, 50.0f)); //right
     InternalCameraBase3->SetupAttachment(GetMesh());
+    InternalCameraBase4 = CreateDefaultSubobject<USceneComponent>(TEXT("InternalCameraBase4"));
+    InternalCameraBase4->SetRelativeLocation(FVector(25, -10, 75.0f)); //driver
+    InternalCameraBase4->SetupAttachment(GetMesh());
+    InternalCameraBase5 = CreateDefaultSubobject<USceneComponent>(TEXT("InternalCameraBase5"));
+    InternalCameraBase5->SetRelativeLocation(FVector(-36.0f, 0, 50.0f)); //rear
+    InternalCameraBase5->SetRelativeRotation(FRotator(0, 180, 0));
+    InternalCameraBase5->SetupAttachment(GetMesh());
 
     // In car HUD
     // Create text render component for in car speed display
@@ -251,18 +298,22 @@ ACarPawn::ACarPawn()
     wrapper_.reset(new VehiclePawnWrapper());
 }
 
-void ACarPawn::NotifyHit(class UPrimitiveComponent* MyComp, class AActor* Other, class UPrimitiveComponent* OtherComp, bool bSelfMoved, FVector HitLocation, 
+void ACarPawn::NotifyHit(class UPrimitiveComponent* MyComp, class AActor* Other, class UPrimitiveComponent* OtherComp, bool bSelfMoved, FVector HitLocation,
     FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit)
 {
     wrapper_->onCollision(MyComp, Other, OtherComp, bSelfMoved, HitLocation,
         HitNormal, NormalImpulse, Hit);
 }
 
-void ACarPawn::initializeForBeginPlay(bool enable_rpc, const std::string& api_server_address)
+void ACarPawn::initializeForBeginPlay(bool enable_rpc, const std::string& api_server_address, bool engine_sound)
 {
+    if (engine_sound)
+        EngineSoundComponent->Activate();
+    else
+        EngineSoundComponent->Deactivate();
 
     //put camera little bit above vehicle
-    FTransform camera_transform(FVector(0, 0, 0));
+    FTransform camera_transform(FVector::ZeroVector);
     FActorSpawnParameters camera_spawn_params;
     camera_spawn_params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
     InternalCamera1 = this->GetWorld()->SpawnActor<APIPCamera>(pip_camera_class_, camera_transform, camera_spawn_params);
@@ -271,13 +322,28 @@ void ACarPawn::initializeForBeginPlay(bool enable_rpc, const std::string& api_se
     InternalCamera2->AttachToComponent(InternalCameraBase2, FAttachmentTransformRules::KeepRelativeTransform);
     InternalCamera3 = this->GetWorld()->SpawnActor<APIPCamera>(pip_camera_class_, camera_transform, camera_spawn_params);
     InternalCamera3->AttachToComponent(InternalCameraBase3, FAttachmentTransformRules::KeepRelativeTransform);
+    InternalCamera4 = this->GetWorld()->SpawnActor<APIPCamera>(pip_camera_class_, camera_transform, camera_spawn_params);
+    InternalCamera4->AttachToComponent(InternalCameraBase4, FAttachmentTransformRules::KeepRelativeTransform);
+    InternalCamera5 = this->GetWorld()->SpawnActor<APIPCamera>(pip_camera_class_, FTransform(FRotator(0, 180, 0), FVector::ZeroVector), camera_spawn_params);
+    InternalCamera5->AttachToComponent(InternalCameraBase5, FAttachmentTransformRules::KeepRelativeTransform);
+
 
     setupInputBindings();
 
-    std::vector<APIPCamera*> cameras = { InternalCamera1, InternalCamera2, InternalCamera3 };
+    std::vector<APIPCamera*> cameras = { InternalCamera1, InternalCamera2, InternalCamera3, InternalCamera4, InternalCamera5 };
     wrapper_->initialize(this, cameras);
+    wrapper_->setKinematics(&kinematics_);
 
     startApiServer(enable_rpc, api_server_address);
+}
+
+void ACarPawn::reset(bool disable_api_control)
+{
+    this->getVehiclePawnWrapper()->reset();
+    controller_->setCarControls(CarApi::CarControls());
+
+    if (disable_api_control)
+        api_control_enabled_ = false;
 }
 
 void ACarPawn::enableApiControl(bool is_enabled)
@@ -293,7 +359,7 @@ bool ACarPawn::isApiControlEnabled()
 void ACarPawn::startApiServer(bool enable_rpc, const std::string& api_server_address)
 {
     if (enable_rpc) {
-        controller_.reset(new CarController(this));
+        controller_.reset(new CarApi(this));
 
 
 #ifdef AIRLIB_NO_RPC
@@ -352,7 +418,7 @@ void ACarPawn::setupInputBindings()
     UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("MoveForward", EKeys::Up, 1), this,
         this, &ACarPawn::MoveForward);
 
-    &UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("MoveForward", EKeys::Down, -1), this,
+    UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("MoveForward", EKeys::Down, -1), this,
         this, &ACarPawn::MoveForward);
 
     UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("MoveRight", EKeys::Right, 1), this,
@@ -361,27 +427,38 @@ void ACarPawn::setupInputBindings()
     UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("MoveRight", EKeys::Left, -1), this,
         this, &ACarPawn::MoveRight);
 
-    UAirBlueprintLib::BindActionToKey("Handbrake", EKeys::SpaceBar, this, &ACarPawn::OnHandbrakePressed, true);
-    UAirBlueprintLib::BindActionToKey("Handbrake", EKeys::SpaceBar, this, &ACarPawn::OnHandbrakeReleased, false);
+    UAirBlueprintLib::BindActionToKey("Handbrake", EKeys::End, this, &ACarPawn::OnHandbrakePressed, true);
+    UAirBlueprintLib::BindActionToKey("Handbrake", EKeys::End, this, &ACarPawn::OnHandbrakeReleased, false);
 
-    //PlayerInputComponent->BindAxis("MoveForward", this, &ACarPawn::MoveForward);
-    //PlayerInputComponent->BindAxis("MoveRight", this, &ACarPawn::MoveRight);
-    //PlayerInputComponent->BindAxis(LookUpBinding);
-    //PlayerInputComponent->BindAxis(LookRightBinding);
+    UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("Footbrake", EKeys::SpaceBar, 1), this,
+        this, &ACarPawn::FootBrake);
 
-    //PlayerInputComponent->BindAction("Handbrake", IE_Pressed, this, &ACarPawn::OnHandbrakePressed);
-    //PlayerInputComponent->BindAction("Handbrake", IE_Released, this, &ACarPawn::OnHandbrakeReleased);
-    //PlayerInputComponent->BindAction("SwitchCamera", IE_Pressed, this, &ACarPawn::OnToggleCamera);
+    UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("MoveRight", EKeys::Gamepad_LeftX, 1), this,
+        this, &ACarPawn::MoveRight);
 
-    //PlayerInputComponent->BindAction("ResetVR", IE_Pressed, this, &ACarPawn::OnResetVR); 
+    UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("MoveForward", EKeys::Gamepad_RightTriggerAxis, 1), this,
+        this, &ACarPawn::MoveForward);
+
+    UAirBlueprintLib::BindAxisToKey(FInputAxisKeyMapping("Footbrake", EKeys::Gamepad_LeftTriggerAxis, 1), this,
+        this, &ACarPawn::FootBrake);
+
+    //below is not needed
+    //UAirBlueprintLib::BindActionToKey("Reverse", EKeys::Down, this, &ACarPawn::OnReversePressed, true);
+    //UAirBlueprintLib::BindActionToKey("Reverse", EKeys::Down, this, &ACarPawn::OnReverseReleased, false);
 }
 
 void ACarPawn::MoveForward(float Val)
 {
+    if (Val < 0)
+        OnReversePressed();
+    else
+        OnReverseReleased();
+
     if (!api_control_enabled_) {
         UAirBlueprintLib::LogMessage(TEXT("Throttle: "), FString::SanitizeFloat(Val), LogDebugLevel::Informational);
 
         GetVehicleMovementComponent()->SetThrottleInput(Val);
+        throttle_ = Val;
     }
     else
         UAirBlueprintLib::LogMessage(TEXT("Throttle: "), TEXT("(API)"), LogDebugLevel::Informational);
@@ -393,6 +470,7 @@ void ACarPawn::MoveRight(float Val)
         UAirBlueprintLib::LogMessage(TEXT("Steering: "), FString::SanitizeFloat(Val), LogDebugLevel::Informational);
 
         GetVehicleMovementComponent()->SetSteeringInput(Val);
+        steering_ = Val;
     }
     else
         UAirBlueprintLib::LogMessage(TEXT("Steering: "), TEXT("(API)"), LogDebugLevel::Informational);
@@ -401,32 +479,88 @@ void ACarPawn::MoveRight(float Val)
 void ACarPawn::OnHandbrakePressed()
 {
     if (!api_control_enabled_) {
-        UAirBlueprintLib::LogMessage(TEXT("Handbreak: "), TEXT("Pressed"), LogDebugLevel::Informational);
+        UAirBlueprintLib::LogMessage(TEXT("Handbrake: "), TEXT("Pressed"), LogDebugLevel::Informational);
 
         GetVehicleMovementComponent()->SetHandbrakeInput(true);
     }
     else
-        UAirBlueprintLib::LogMessage(TEXT("Handbreak: "), TEXT("(API)"), LogDebugLevel::Informational);
+        UAirBlueprintLib::LogMessage(TEXT("Handbrake: "), TEXT("(API)"), LogDebugLevel::Informational);
 }
 
 void ACarPawn::OnHandbrakeReleased()
 {
     if (!api_control_enabled_) {
-        UAirBlueprintLib::LogMessage(TEXT("Handbreak: "), TEXT("Released"), LogDebugLevel::Informational);
+        UAirBlueprintLib::LogMessage(TEXT("Handbrake: "), TEXT("Released"), LogDebugLevel::Informational);
 
         GetVehicleMovementComponent()->SetHandbrakeInput(false);
     }
     else
-        UAirBlueprintLib::LogMessage(TEXT("Handbreak: "), TEXT("(API)"), LogDebugLevel::Informational);
+        UAirBlueprintLib::LogMessage(TEXT("Handbrake: "), TEXT("(API)"), LogDebugLevel::Informational);
+}
+
+void ACarPawn::FootBrake(float Val)
+{
+    if (!api_control_enabled_) {
+        UAirBlueprintLib::LogMessage(TEXT("Footbrake: "), FString::SanitizeFloat(Val), LogDebugLevel::Informational);
+
+        GetVehicleMovementComponent()->SetBrakeInput(Val);
+        brake_ = Val;
+    }
+    else
+        UAirBlueprintLib::LogMessage(TEXT("Footbrake: "), TEXT("(API)"), LogDebugLevel::Informational);
+}
+
+void ACarPawn::OnReversePressed()
+{
+    if (!api_control_enabled_) {
+        UAirBlueprintLib::LogMessage(TEXT("Reverse: "), TEXT("Pressed"), LogDebugLevel::Informational);
+
+        if (GetVehicleMovementComponent()->GetTargetGear() >= 0)
+            GetVehicleMovementComponent()->SetTargetGear(-1, true);
+    }
+    else
+        UAirBlueprintLib::LogMessage(TEXT("Reverse: "), TEXT("(API)"), LogDebugLevel::Informational);
+}
+
+void ACarPawn::OnReverseReleased()
+{
+    if (!api_control_enabled_) {
+        UAirBlueprintLib::LogMessage(TEXT("Reverse: "), TEXT("Released"), LogDebugLevel::Informational);
+
+        if (GetVehicleMovementComponent()->GetTargetGear() < 0) {
+            GetVehicleMovementComponent()->SetTargetGear(0, true);
+            GetVehicleMovementComponent()->SetUseAutoGears(true);
+        }
+    }
+    else
+        UAirBlueprintLib::LogMessage(TEXT("Reverse: "), TEXT("(API)"), LogDebugLevel::Informational);
+}
+
+void ACarPawn::updateKinematics(float delta)
+{
+    auto last_kinematics = kinematics_;
+
+    kinematics_.pose = getVehiclePawnWrapper()->getPose();
+    kinematics_.twist.linear = NedTransform::toNedMeters(this->GetVelocity(), false);
+    kinematics_.twist.angular = msr::airlib::VectorMath::toAngularVelocity(
+        kinematics_.pose.orientation, last_kinematics.pose.orientation, delta);
+
+    kinematics_.accelerations.linear = (kinematics_.twist.linear - last_kinematics.twist.linear) / delta;
+    kinematics_.accelerations.angular = (kinematics_.twist.angular - last_kinematics.twist.angular) / delta;
+
+    //TODO: update other fields
+
 }
 
 void ACarPawn::Tick(float Delta)
 {
     Super::Tick(Delta);
 
+    updateKinematics(Delta);
+
     // Setup the flag to say we are in reverse gear
     bInReverseGear = GetVehicleMovement()->GetCurrentGear() < 0;
-    
+
     // Update phsyics material
     UpdatePhysicsMaterial();
 
@@ -439,6 +573,8 @@ void ACarPawn::Tick(float Delta)
     // Pass the engine RPM to the sound component
     float RPMToAudioScale = 2500.0f / GetVehicleMovement()->GetEngineMaxRotationSpeed();
     EngineSoundComponent->SetFloatParameter(EngineAudioRPM, GetVehicleMovement()->GetEngineRotationSpeed()*RPMToAudioScale);
+
+    getVehiclePawnWrapper()->setLogLine(getLogString());
 }
 
 void ACarPawn::BeginPlay()
@@ -482,7 +618,7 @@ void ACarPawn::UpdateInCarHUD()
         // Setup the text render component strings
         InCarSpeed->SetText(SpeedDisplayString);
         InCarGear->SetText(GearDisplayString);
-        
+
         if (bInReverseGear == false)
         {
             InCarGear->SetTextRenderColor(GearDisplayColor);
@@ -509,6 +645,31 @@ void ACarPawn::UpdatePhysicsMaterial()
             bIsLowFriction = true;
         }
     }
+}
+
+std::string ACarPawn::getLogString()
+{
+    // Timestamp \t Speed \t Throttle \t Steering \t Brake \t gear
+
+    // timestamp
+    uint64_t timestamp_millis = static_cast<uint64_t>(msr::airlib::ClockFactory::get()->nowNanos() / 1.0E6);
+
+    // Speed
+    float KPH = FMath::Abs(GetVehicleMovement()->GetForwardSpeed()) * 0.036f;
+    int32 KPH_int = FMath::FloorToInt(KPH);
+
+    // Gear
+    FString gearString = GearDisplayString.ToString();
+    std::string gear = std::string(TCHAR_TO_UTF8(*gearString));
+
+    std::string logString = std::to_string(timestamp_millis).append("\t")
+        .append(std::to_string(KPH_int).append("\t"))
+        .append(std::to_string(throttle_)).append("\t")
+        .append(std::to_string(steering_)).append("\t")
+        .append(std::to_string(brake_)).append("\t")
+        .append(gear).append("\t");
+
+    return logString;
 }
 
 #undef LOCTEXT_NAMESPACE
